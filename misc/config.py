@@ -46,7 +46,7 @@ _C.MODEL.TYPE = "vit"
 # Model name
 _C.MODEL.NAME = "vit"
 # Checkpoint to resume, could be overwritten by command line argument
-_C.MODEL.RESUME = "/mimer/NOBACKUP/groups/naiss2023-5-522/ali/mixed_precision_one_shot_training/TinyIMGNT/ckpt_360 (2).pth"  #'/home/ali/Downloads/ckpt_360.pth'
+_C.MODEL.RESUME = ""
 # Number of classes, overwritten in data preparation
 _C.MODEL.NUM_CLASSES = 1000
 # Dropout rate
@@ -56,7 +56,7 @@ _C.MODEL.DROP_PATH_RATE = 0.1
 # Label Smoothing
 _C.MODEL.LABEL_SMOOTHING = 0.1
 
-_C.MODEL.TEACHER_RESUME = "/mimer/NOBACKUP/groups/naiss2023-5-522/ali/mixed_precision_one_shot_training/TinyIMGNT/ckpt_360.pth"
+_C.MODEL.TEACHER_RESUME = ""
 # -----------------------------------------------------------------------------
 # Training settings
 # -----------------------------------------------------------------------------

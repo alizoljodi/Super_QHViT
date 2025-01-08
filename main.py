@@ -54,14 +54,15 @@ def parse_option():
     parser.add_argument(
         "--cfg",
         type=str,
-        required=True,
+        default='/home/ali/Pictures/HQViT_NAS_Tiny_imgnt/configs/cfg.yaml',
         metavar="FILE",
         help="Path to config file",
     )
     parser.add_argument(
         "--working-dir",
         type=str,
-        required=True,
+        default='/home/ali/Pictures/test',
+        #required=True,
         help="Root directory for models and logs",
     )
     parser.add_argument(
@@ -122,6 +123,12 @@ def setup_worker_env(rank, ngpus_per_node, config):
         )
         torch.cuda.set_device(rank)
     else:
+        dist.init_process_group(
+            backend="nccl",
+            init_method="tcp://127.0.0.1:29500",
+            world_size=config.WORLD_SIZE,
+            rank=rank
+        )
         # Single GPU or CPU training
         torch.cuda.set_device(rank)
     
@@ -178,7 +185,7 @@ def main_worker(rank, ngpus_per_node, config, args):
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
     # Build data loaders
-    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn, random_erasing = build_loader(config)
+    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(config)
     logging.get_logger(__name__).info(f"Creating model: {config.MODEL.TYPE}/{config.MODEL.NAME}")
     
     # Create model
@@ -237,9 +244,7 @@ def main_worker(rank, ngpus_per_node, config, args):
     logging.get_logger(__name__).info("Start training")
     start_time = time.time()
 
-    # Initialize AMP scaler
-    scaler = GradScaler()
-
+    
     for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
         train_one_epoch(
             config=config,
@@ -252,9 +257,7 @@ def main_worker(rank, ngpus_per_node, config, args):
             lr_scheduler=lr_scheduler,
             model_ema=model_ema,
             device=device,
-            random_erasing=random_erasing,
             args=args,
-            scaler=scaler
         )
 
         # Save checkpoint
@@ -292,9 +295,7 @@ def train_one_epoch(
     lr_scheduler,
     model_ema,
     device,
-    random_erasing,
     args,
-    scaler
 ):
     """
     Trains the model for one epoch.
@@ -318,27 +319,22 @@ def train_one_epoch(
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
-        if random_erasing:
-            samples = random_erasing(samples)
 
-        # Forward pass with autocast
-        with autocast():
-            output, _, _ = model(samples)
-            loss = criterion(output, targets)
-            loss = loss / config.TRAIN.ACCUMULATION_STEPS
+
+        output, _, _ = model(samples)
+        loss = criterion(output, targets)
+        loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
         # Backward pass
-        scaler.scale(loss).backward()
+        loss.backward()
 
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             # Gradient clipping
-            scaler.unscale_(optimizer)
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
             grad_norm_meter.update(grad_norm.item())
 
             # Optimizer step
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             optimizer.zero_grad()
 
             # Update learning rate scheduler
@@ -442,9 +438,11 @@ def main():
         os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
         mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config, args))
     else:
+        config.defrost()
         ngpus_per_node = 1
         config.WORLD_SIZE = 1
         config.RANK = 0
+        config.freeze()
         main_worker(0, ngpus_per_node, config, args)
 
 if __name__ == "__main__":
