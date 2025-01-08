@@ -1,41 +1,32 @@
-import random
-import os
-import time
 import argparse
 import datetime
-import numpy as np
-import warnings
-import sys
 import math
-import logging
-from copy import deepcopy
+import os
+import random
+import sys
+import time
 from collections import defaultdict
-import gc
-from data import build_hf_tiny_imagenet_loader, build_loader
+from copy import deepcopy
+import warnings
+import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
-from torch.distributed import destroy_process_group, init_process_group
 import torch.multiprocessing as mp
-import torch.profiler
-import torch.nn.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.profiler
 from torch.amp import autocast
-
-logging.getLogger("PIL").setLevel(logging.WARNING)
-# Suppress all warnings
-warnings.filterwarnings("ignore")
-# from torch.amp  import GradScaler
-from torch.utils.tensorboard import SummaryWriter
-from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
-from timm.utils import accuracy, AverageMeter
-import timm as timm
-from timm.utils import ModelEma
-from misc.config import get_config
-import misc.attentive_nas_eval as attentive_nas_eval
-import models
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import DataLoader
+
+import logging as logging_module  # Renamed to avoid conflict with misc.logger
+from data import build_hf_tiny_imagenet_loader, build_loader
+from misc.attentive_nas_eval import validate as nas_validate
+from misc.config import get_config
 from misc.lr_scheduler import build_scheduler
+from misc.loss_ops import AdaptiveLossSoft
 from misc.optimizer import build_optimizer
 from misc.utils import (
     load_checkpoint,
@@ -46,211 +37,211 @@ from misc.utils import (
     load_teacher_checkpoint,
 )
 import misc.logger as logging
+import models
+import timm
+from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+from timm.utils import accuracy, AverageMeter, ModelEma
 
-from misc.loss_ops import AdaptiveLossSoft
-
-logger = logging.get_logger(__name__)
-grad_norms = []
-glob_epoch = 0
-
+# Suppress warnings and set logging levels
+logging_module.getLogger("PIL").setLevel(logging_module.WARNING)
+warnings.filterwarnings("ignore")
 
 def parse_option():
     parser = argparse.ArgumentParser(
-        "Super-HQViT Training and Evaluation", add_help=False
+        description="Super-HQViT Training and Evaluation", 
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument(
         "--cfg",
         type=str,
-        default=r"/home/ali/Downloads/TinyIMGNT_HQViT_NAS/HQViT_NAS_Tiny_imgnt/configs/cfg.yaml",
+        required=True,
         metavar="FILE",
-        help="path to config file",
+        help="Path to config file",
     )
     parser.add_argument(
         "--working-dir",
         type=str,
-        default=f"/home/ali/Downloads/TinyIMGNT_HQViT_NAS/test",
-        help="root dir for models and logs",
+        required=True,
+        help="Root directory for models and logs",
     )
     parser.add_argument(
         "--distributed",
         action="store_true",
         default=False,
-        help="Enable distribured training",
-    )
-
-    # easy config modification
-    parser.add_argument("--batch-size", type=int, help="batch size for single GPU")
-    parser.add_argument("--resume", type=str, help="resume path")
-    parser.add_argument(
-        "--fp_teacher_dir", type=str, help="Path to full-precision supernet weights"
+        help="Enable distributed training",
     )
     parser.add_argument(
-        "--accumulation-steps", type=int, help="gradient accumulation steps"
+        "--batch-size", type=int, help="Batch size for single GPU"
+    )
+    parser.add_argument(
+        "--resume", type=str, help="Path to resume checkpoint"
+    )
+    parser.add_argument(
+        "--fp_teacher_dir", type=str, help="Path to full-precision teacher weights"
+    )
+    parser.add_argument(
+        "--accumulation-steps", type=int, default=1, help="Gradient accumulation steps"
     )
     parser.add_argument(
         "--use-checkpoint",
         action="store_true",
-        help="whether to use gradient checkpointing to save memory",
+        help="Use gradient checkpointing to save memory",
     )
-    parser.add_argument("--eval", action="store_true", help="Perform evaluation only")
+    parser.add_argument(
+        "--eval", action="store_true", help="Perform evaluation only"
+    )
     parser.add_argument(
         "--throughput", action="store_true", help="Test throughput only"
     )
-    args, unparsed = parser.parse_known_args()
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed"
+    )
+    parser.add_argument(
+        "--print-freq", type=int, default=100, help="Print frequency"
+    )
+    args, _ = parser.parse_known_args()
 
-    # setup the work dir
+    # Setup the work directory
     args.output = args.working_dir
     writer = SummaryWriter(os.path.join(args.output, "log"))
-    # args.tag = args.workflow_run_id or args.tag  # override settings
 
+    # Load configuration
     config = get_config(args)
     return args, config
 
-
-def _setup_worker_env(ngpus_per_node, config):
-    config.defrost()
+def setup_worker_env(rank, ngpus_per_node, config):
+    """
+    Sets up the distributed training environment.
+    """
     if config.distributed:
-        config.LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-        config.RANK = int(os.environ["RANK"])
-        config.WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-        if True:
-            print(
-                f"""
-    =============================================
-    Rank: {config.RANK}
-    Local rank: {config.LOCAL_RANK}
-    World size: {config.WORLD_SIZE}
-    Master addres: {os.environ["MASTER_ADDR"]}
-    Master port: {os.environ["MASTER_PORT"]}
-    =============================================
-            """
-            )
-        dist.init_process_group(
-            backend="nccl", rank=config.RANK, world_size=config.WORLD_SIZE
-        )
-        torch.cuda.set_device(f"cuda:{config.LOCAL_RANK}")
-    else:
-        gpu = 0
-        config.RANK = gpu
-        config.WORLD_SIZE = 1
-        config.gpu = gpu
-        config.LOCAL_RANK = gpu
         dist.init_process_group(
             backend="nccl",
-            init_method="tcp://127.0.0.1:10001",
-            rank=config.RANK,
-            world_size=1,
+            init_method="env://",
+            world_size=config.WORLD_SIZE,
+            rank=rank
         )
-        torch.cuda.set_device(f"cuda:{config.LOCAL_RANK}")
-    torch.distributed.barrier()
-
-    seed = config.SEED + dist.get_rank()
+        torch.cuda.set_device(rank)
+    else:
+        # Single GPU or CPU training
+        torch.cuda.set_device(rank)
+    
+    # Set seeds for reproducibility
+    seed = config.SEED + rank
     torch.manual_seed(seed)
     np.random.seed(seed)
+    random.seed(seed)
     cudnn.benchmark = True
 
-    assert (
-        dist.get_world_size() == config.WORLD_SIZE
-    ), "DDP is not properply initialized."
-    # linear scale the learning rate according to total batch size, may not be optimal
+    # Linear scaling of the learning rate based on batch size and world size
+    config.defrost()
     linear_scaled_lr = (
-        config.TRAIN.BASE_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+        config.TRAIN.BASE_LR * config.DATA.BATCH_SIZE * config.WORLD_SIZE / 512.0
     )
     linear_scaled_warmup_lr = (
-        config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+        config.TRAIN.WARMUP_LR * config.DATA.BATCH_SIZE * config.WORLD_SIZE / 512.0
     )
     linear_scaled_min_lr = (
-        config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE * dist.get_world_size() / 512.0
+        config.TRAIN.MIN_LR * config.DATA.BATCH_SIZE * config.WORLD_SIZE / 512.0
     )
-    # gradient accumulation also need to scale the learning rate
+
     if config.TRAIN.ACCUMULATION_STEPS > 1:
-        linear_scaled_lr = linear_scaled_lr * config.TRAIN.ACCUMULATION_STEPS
-        linear_scaled_warmup_lr = (
-            linear_scaled_warmup_lr * config.TRAIN.ACCUMULATION_STEPS
-        )
-        linear_scaled_min_lr = linear_scaled_min_lr * config.TRAIN.ACCUMULATION_STEPS
+        linear_scaled_lr *= config.TRAIN.ACCUMULATION_STEPS
+        linear_scaled_warmup_lr *= config.TRAIN.ACCUMULATION_STEPS
+        linear_scaled_min_lr *= config.TRAIN.ACCUMULATION_STEPS
+
     config.TRAIN.BASE_LR = linear_scaled_lr
     config.TRAIN.WARMUP_LR = linear_scaled_warmup_lr
     config.TRAIN.MIN_LR = linear_scaled_min_lr
     config.freeze()
 
-    # Setup logging format.
+    # Setup logging
     logging.setup_logging(
         os.path.join(config.OUTPUT, "stdout.log"),
-        "w",
+        mode="w",
     )
 
-    # backup the config
-    if dist.get_rank() == 0:
-        path = os.path.join(config.OUTPUT, "config.json")
-        with open(path, "w") as f:
+    # Backup the config
+    if rank == 0:
+        config_path = os.path.join(config.OUTPUT, "config.json")
+        with open(config_path, "w") as f:
             f.write(config.dump())
-        logger.info(f"Full config saved to {path}")
+        logging.get_logger(__name__).info(f"Full config saved to {config_path}")
 
-    # print config
-    logger.info(config.dump())
+    # Log the config
+    logging.get_logger(__name__).info(config.dump())
 
+def main_worker(rank, ngpus_per_node, config, args):
+    """
+    Main worker function for each process in distributed training.
+    """
+    setup_worker_env(rank, ngpus_per_node, config)
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
-def main_worker(rank, ngpus_per_node, config):
-    _setup_worker_env(ngpus_per_node, config)
-    device = torch.device(f"cuda:{config.LOCAL_RANK}")
-    (
-        dataset_train,
-        dataset_val,
-        data_loader_train,
-        data_loader_val,
-        mixup_fn,
-        # random_erasing,
-    ) = build_loader(config)
-    logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
+    # Build data loaders
+    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn, random_erasing = build_loader(config)
+    logging.get_logger(__name__).info(f"Creating model: {config.MODEL.TYPE}/{config.MODEL.NAME}")
+    
+    # Create model
     model = models.model_factory.create_model(
         config, parent="model", full_precision=False
     )
-    print(model)
-    model.cuda()
+    model.to(device)
 
-    logger.info(str(model))
-    model_ema = ModelEma(model, decay=0.99985, device=device, resume="")
+    logging.get_logger(__name__).info(str(model))
+    
+    # Model EMA
+    model_ema = ModelEma(model, decay=0.99985, device=device, resume='')
 
+    # Build optimizer and scheduler
     optimizer = build_optimizer(config, model)
-
-    model = torch.nn.parallel.DistributedDataParallel(
-        model, device_ids=[device], broadcast_buffers=False, find_unused_parameters=True
-    )
-    model_without_ddp = model.module
-
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    logger.info(f"number of params: {n_parameters}")
-    if hasattr(model_without_ddp, "flops"):
-        flops = model_without_ddp.flops()
-        logger.info(f"number of GFLOPs: {flops / 1e9}")
     lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
+    # Wrap model with DDP
+    if config.distributed:
+        model = DDP(
+            model, 
+            device_ids=[rank], 
+            broadcast_buffers=False, 
+            find_unused_parameters=True
+        )
+        model_without_ddp = model.module
+    else:
+        model_without_ddp = model
+
+    # Log model parameters and FLOPs
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logging.get_logger(__name__).info(f"Number of parameters: {n_parameters}")
+    if hasattr(model_without_ddp, "flops"):
+        flops = model_without_ddp.flops()
+        logging.get_logger(__name__).info(f"Number of GFLOPs: {flops / 1e9}")
+
+    # Define loss criterion
     if config.AUG.MIXUP > 0.0:
         criterion = SoftTargetCrossEntropy()
     elif config.MODEL.LABEL_SMOOTHING > 0.0:
         criterion = LabelSmoothingCrossEntropy(smoothing=config.MODEL.LABEL_SMOOTHING)
     else:
-        criterion = torch.nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss()
 
+    # Load checkpoint if resuming
     max_accuracy = 0.0
-
-    if config.MODEL.RESUME and True == False:
+    if config.MODEL.RESUME:
         max_accuracy = load_checkpoint(
-            config, model_without_ddp, optimizer, lr_scheduler, logger
+            config, model_without_ddp, optimizer, lr_scheduler, logging.get_logger(__name__)
         )
         model_ema.ema = deepcopy(model_without_ddp)
         if config.EVAL_MODE:
+            validate(config, data_loader_train, data_loader_val, model, device)
             return
-    logger.info("Start training")
+
+    logging.get_logger(__name__).info("Start training")
     start_time = time.time()
-    supernet_gn = defaultdict(float)
 
-    for epoch in range(100):
-        glob_epoch = epoch
+    # Initialize AMP scaler
+    scaler = GradScaler()
 
-        supernet_gn = train_one_epoch(
+    for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
+        train_one_epoch(
             config=config,
             model=model,
             criterion=criterion,
@@ -259,34 +250,36 @@ def main_worker(rank, ngpus_per_node, config):
             epoch=epoch,
             mixup_fn=mixup_fn,
             lr_scheduler=lr_scheduler,
-            teacher=None,
             model_ema=model_ema,
-            supernet_gradnorm=supernet_gn,
             device=device,
-            random_erasing=None,
+            random_erasing=random_erasing,
+            args=args,
+            scaler=scaler
         )
-        if dist.get_rank() == 0 and (
-            epoch % config.SAVE_FREQ == 0 or epoch == (config.TRAIN.EPOCHS - 1)
-        ):
-            save_checkpoint(
-                config,
-                epoch,
-                model,
-                max_accuracy,
-                optimizer,
-                lr_scheduler,
-                logger,
-                model,
-            )
-        # validate(config, data_loader_train, data_loader_val, model,device)
-        if epoch % 1 == 0:
+
+        # Save checkpoint
+        if (epoch + 1) % config.SAVE_FREQ == 0 or (epoch + 1) == config.TRAIN.EPOCHS:
+            if rank == 0:
+                save_checkpoint(
+                    config,
+                    epoch,
+                    model_without_ddp,
+                    max_accuracy,
+                    optimizer,
+                    lr_scheduler,
+                    logging.get_logger(__name__),
+                    model_ema=model_ema
+                )
+
+        # Validation
+        if (epoch + 1) % config.VAL_FREQ == 0 or (epoch + 1) == config.TRAIN.EPOCHS:
             validate(config, data_loader_train, data_loader_val, model, device)
-    glob_epoch = 0
+
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    logger.info("Training time {}".format(total_time_str))
-    destroy_process_group()
-
+    logging.get_logger(__name__).info(f"Training time {total_time_str}")
+    if config.distributed:
+        dist.destroy_process_group()
 
 def train_one_epoch(
     config,
@@ -297,109 +290,97 @@ def train_one_epoch(
     epoch,
     mixup_fn,
     lr_scheduler,
-    teacher=None,
-    model_ema=None,
-    supernet_gradnorm=None,
-    drop=False,
-    device="",
-    random_erasing=None,
+    model_ema,
+    device,
+    random_erasing,
+    args,
+    scaler
 ):
+    """
+    Trains the model for one epoch.
+    """
     model.train()
-
     num_steps = len(data_loader)
     data_time = AverageMeter()
     batch_time = AverageMeter()
     loss_meter = AverageMeter()
     super_loss_meter = AverageMeter()
-    grad_norms = []
-
-    norm_meter = AverageMeter()
-
-    ce_criterion = nn.CrossEntropyLoss()
+    grad_norm_meter = AverageMeter()
 
     start = time.time()
-    end = time.time()
 
-    cfgs = []
+    optimizer.zero_grad()
 
     for idx, (samples, targets) in enumerate(data_loader):
+        data_time.update(time.time() - start)
         samples = samples.to(device)
         targets = targets.to(device)
-        optimizer.zero_grad()
-
-        data_time.update(time.time() - end)
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         if random_erasing:
             samples = random_erasing(samples)
 
-        cfg = model.module.sample_max_subnet(quantized=True)
+        # Forward pass with autocast
+        with autocast():
+            output, _, _ = model(samples)
+            loss = criterion(output, targets)
+            loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
-        output, model_features, block_names = model(samples)
+        # Backward pass
+        scaler.scale(loss).backward()
 
-        super_loss = criterion(output, targets)
+        if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
+            # Gradient clipping
+            scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+            grad_norm_meter.update(grad_norm.item())
 
-        if not math.isfinite(super_loss.item()):
-            pass
+            # Optimizer step
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
 
-        super_loss.backward()
+            # Update learning rate scheduler
+            lr_scheduler.step_update(epoch * num_steps + idx)
 
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+            # Update EMA
+            if model_ema is not None:
+                model_ema.update(model)
 
-        grad_norms.append(grad_norm)
-        optimizer.step()
-        lr_scheduler.step_update(epoch * num_steps + idx)
+        batch_time.update(time.time() - start)
+        start = time.time()
 
-        torch.cuda.synchronize()
-
-        if model_ema is not None:
-            model_ema.update(model)
-
-        norm_meter.update(grad_norm)
-        super_loss_meter.update(super_loss)
-
-        batch_time.update(time.time() - end)
-        end = time.time()
-
-        if idx % config.PRINT_FREQ == 0:
+        # Logging
+        if idx % args.print_freq == 0:
             lr = optimizer.param_groups[0]["lr"]
-            memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
-            etas = batch_time.avg * (num_steps - idx)
-            if config.distributed:
-                logger.info(
-                    f"Rank: [{config.LOCAL_RANK}]\t"
-                    f"Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t"
-                    f"eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t"
-                    f"data {data_time.val:.4f} ({data_time.avg:.4f})\t"
-                    f"batch {batch_time.val:.4f} ({batch_time.avg:.4f})\t"
-                    f"ce_loss_meter {super_loss_meter.val:.4f} ({super_loss_meter.avg:.4f})\t"
-                    f"grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t"
-                    f"mem {memory_used:.0f}MB"
-                )
-            # prof.step()
-            else:
-                logger.info(
-                    f"Train: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t"
-                    f"eta {datetime.timedelta(seconds=int(etas))} lr {lr:.6f}\t"
-                    f"data {data_time.val:.4f} ({data_time.avg:.4f})\t"
-                    f"batch {batch_time.val:.4f} ({batch_time.avg:.4f})\t"
-                    f"ce_loss_meter {super_loss_meter.val:.4f} ({super_loss_meter.avg:.4f})\t"
-                    f"grad_norm {norm_meter.val:.4f} ({norm_meter.avg:.4f})\t"
-                    f"mem {memory_used:.0f}MB"
-                )
+            memory_used = torch.cuda.max_memory_allocated(device) / (1024.0 * 1024.0)
+            eta_seconds = batch_time.avg * (num_steps - idx)
+            eta = str(datetime.timedelta(seconds=int(eta_seconds)))
 
-    epoch_time = time.time() - start
-    logger.info(
-        f"EPOCH {epoch} training takes {datetime.timedelta(seconds=int(epoch_time))}"
+            log_message = (
+                f"Epoch: [{epoch}/{config.TRAIN.EPOCHS}][{idx}/{num_steps}]\t"
+                f"ETA: {eta}\t"
+                f"LR: {lr:.6f}\t"
+                f"Data Time: {data_time.val:.4f} ({data_time.avg:.4f})\t"
+                f"Batch Time: {batch_time.val:.4f} ({batch_time.avg:.4f})\t"
+                f"Loss: {loss.item() * config.TRAIN.ACCUMULATION_STEPS:.4f}\t"
+                f"Grad Norm: {grad_norm_meter.val:.4f}\t"
+                f"Mem: {memory_used:.0f}MB"
+            )
+            if config.distributed:
+                log_message = f"Rank: [{dist.get_rank()}]\t" + log_message
+            logging.get_logger(__name__).info(log_message)
+
+    logging.get_logger(__name__).info(
+        f"Epoch [{epoch}] training takes {str(datetime.timedelta(seconds=int(time.time() - start)))}"
     )
 
-    return supernet_gradnorm
-
-
-@torch.no_grad()
 def validate(config, train_loader, valid_loader, model, device, writer=None):
-    subnets_to_be_evaluated = {
+    """
+    Validates the model on the validation dataset.
+    """
+    subnets_to_evaluate = {
         "attentive_nas_random_net": {},
         "attentive_nas_min_net": {},
         "attentive_nas_max_net": {},
@@ -407,48 +388,64 @@ def validate(config, train_loader, valid_loader, model, device, writer=None):
 
     criterion = nn.CrossEntropyLoss()
 
-    attentive_nas_eval.validate(
-        subnets_to_be_evaluated,
+    nas_validate(
+        subnets_to_evaluate,
         train_loader,
         valid_loader,
         model,
         criterion,
         config,
-        logger,
+        logging.get_logger(__name__),
         bn_calibration=True,
         device=device,
         writer=writer,
     )
 
-
-@torch.no_grad()
 def throughput(data_loader, model, logger):
+    """
+    Measures the throughput of the model.
+    """
     model.eval()
+    with torch.no_grad():
+        for idx, (images, _) in enumerate(data_loader):
+            images = images.cuda(non_blocking=True)
+            batch_size = images.shape[0]
 
-    for idx, (images, _) in enumerate(data_loader):
-        images = images.cuda(non_blocking=True)
-        batch_size = images.shape[0]
-        for i in range(50):
-            model(images)
-        torch.cuda.synchronize()
-        logger.info(f"throughput averaged with 30 times")
-        tic1 = time.time()
-        for i in range(30):
-            model(images)
-        torch.cuda.synchronize()
-        tic2 = time.time()
-        logger.info(
-            f"batch_size {batch_size} throughput {(tic2 - tic1)/ (30 * batch_size) }"
-        )
-        return
+            # Warm-up
+            for _ in range(50):
+                model(images)
+            torch.cuda.synchronize()
 
+            logger.info("Throughput averaged over 30 iterations")
+            start_time = time.time()
+            for _ in range(30):
+                model(images)
+            torch.cuda.synchronize()
+            end_time = time.time()
+
+            throughput = (end_time - start_time) / (30 * batch_size)
+            logger.info(f"Batch size {batch_size} throughput: {throughput:.6f} sec/sample")
+            break  # Only evaluate the first batch
+
+def main():
+    args, config = parse_option()
+
+    # Set deterministic behavior for reproducibility
+    cudnn.deterministic = True
+
+    # Initialize distributed training if enabled
+    if config.distributed:
+        ngpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", torch.cuda.device_count()))
+        config.WORLD_SIZE = ngpus_per_node * int(os.environ.get("SLURM_NODES", 1))
+        config.RANK = int(os.environ.get("SLURM_PROCID", 0))
+        os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', '127.0.0.1')
+        os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
+        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config, args))
+    else:
+        ngpus_per_node = 1
+        config.WORLD_SIZE = 1
+        config.RANK = 0
+        main_worker(0, ngpus_per_node, config, args)
 
 if __name__ == "__main__":
-    _, config = parse_option()
-
-    cudnn.deterministic = True
-    ngpus_per_node = int(os.environ["SLURM_GPUS_ON_NODE"]) if config.distributed else 1
-    random.seed(config.SEED)
-    torch.manual_seed(config.SEED)
-    # mp.spawn(main_worker, args=(ngpus_per_node, config))
-    main_worker(None, ngpus_per_node, config)
+    main()
