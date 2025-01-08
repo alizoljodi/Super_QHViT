@@ -8,7 +8,7 @@ from .attentive_nas_dynamic_model import (
 
 
 # Quantization=False
-def create_model(args, parent, arch=None, full_precision=False):
+def create_model(args, parent="", arch=None, full_precision=False):
     n_classes = int(getattr(args, "n_classes", 1000))
     bn_momentum = getattr(args, "bn_momentum", 0.1)
     bn_eps = getattr(args, "bn_eps", 1e-5)

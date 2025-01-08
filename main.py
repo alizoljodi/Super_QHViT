@@ -45,24 +45,26 @@ from timm.utils import accuracy, AverageMeter, ModelEma
 # Suppress warnings and set logging levels
 logging_module.getLogger("PIL").setLevel(logging_module.WARNING)
 warnings.filterwarnings("ignore")
+logger = logging.get_logger(__name__)
+
 
 def parse_option():
     parser = argparse.ArgumentParser(
-        description="Super-HQViT Training and Evaluation", 
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Super-HQViT Training and Evaluation",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--cfg",
         type=str,
-        default='/home/ali/Pictures/HQViT_NAS_Tiny_imgnt/configs/cfg.yaml',
+        default="/home/ali/Pictures/HQViT_NAS_Tiny_imgnt/configs/cfg.yaml",
         metavar="FILE",
         help="Path to config file",
     )
     parser.add_argument(
         "--working-dir",
         type=str,
-        default='/home/ali/Pictures/test',
-        #required=True,
+        default="/home/ali/Pictures/test",
+        # required=True,
         help="Root directory for models and logs",
     )
     parser.add_argument(
@@ -71,14 +73,13 @@ def parse_option():
         default=False,
         help="Enable distributed training",
     )
+    parser.add_argument("--batch-size", type=int, help="Batch size for single GPU")
+    parser.add_argument("--resume", type=str, help="Path to resume checkpoint")
     parser.add_argument(
-        "--batch-size", type=int, help="Batch size for single GPU"
-    )
-    parser.add_argument(
-        "--resume", type=str, help="Path to resume checkpoint"
-    )
-    parser.add_argument(
-        "--fp_teacher_dir", type=str, help="Path to full-precision teacher weights"
+        "--fp_teacher_dir",
+        default="/home/ali/Downloads/ckpt_360(1).pth",
+        type=str,
+        help="Path to full-precision teacher weights",
     )
     parser.add_argument(
         "--accumulation-steps", type=int, default=1, help="Gradient accumulation steps"
@@ -88,18 +89,12 @@ def parse_option():
         action="store_true",
         help="Use gradient checkpointing to save memory",
     )
-    parser.add_argument(
-        "--eval", action="store_true", help="Perform evaluation only"
-    )
+    parser.add_argument("--eval", action="store_true", help="Perform evaluation only")
     parser.add_argument(
         "--throughput", action="store_true", help="Test throughput only"
     )
-    parser.add_argument(
-        "--seed", type=int, default=42, help="Random seed"
-    )
-    parser.add_argument(
-        "--print-freq", type=int, default=100, help="Print frequency"
-    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--print-freq", type=int, default=100, help="Print frequency")
     args, _ = parser.parse_known_args()
 
     # Setup the work directory
@@ -110,6 +105,7 @@ def parse_option():
     config = get_config(args)
     return args, config
 
+
 def setup_worker_env(rank, ngpus_per_node, config):
     """
     Sets up the distributed training environment.
@@ -119,7 +115,7 @@ def setup_worker_env(rank, ngpus_per_node, config):
             backend="nccl",
             init_method="env://",
             world_size=config.WORLD_SIZE,
-            rank=rank
+            rank=rank,
         )
         torch.cuda.set_device(rank)
     else:
@@ -127,11 +123,11 @@ def setup_worker_env(rank, ngpus_per_node, config):
             backend="nccl",
             init_method="tcp://127.0.0.1:29500",
             world_size=config.WORLD_SIZE,
-            rank=rank
+            rank=rank,
         )
         # Single GPU or CPU training
         torch.cuda.set_device(rank)
-    
+
     # Set seeds for reproducibility
     seed = config.SEED + rank
     torch.manual_seed(seed)
@@ -177,6 +173,7 @@ def setup_worker_env(rank, ngpus_per_node, config):
     # Log the config
     logging.get_logger(__name__).info(config.dump())
 
+
 def main_worker(rank, ngpus_per_node, config, args):
     """
     Main worker function for each process in distributed training.
@@ -185,9 +182,17 @@ def main_worker(rank, ngpus_per_node, config, args):
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
 
     # Build data loaders
-    dataset_train, dataset_val, data_loader_train, data_loader_val, mixup_fn = build_loader(config)
-    logging.get_logger(__name__).info(f"Creating model: {config.MODEL.TYPE}/{config.MODEL.NAME}")
-    
+    (
+        dataset_train,
+        dataset_val,
+        data_loader_train,
+        data_loader_val,
+        mixup_fn,
+    ) = build_loader(config)
+    logging.get_logger(__name__).info(
+        f"Creating model: {config.MODEL.TYPE}/{config.MODEL.NAME}"
+    )
+
     # Create model
     model = models.model_factory.create_model(
         config, parent="model", full_precision=False
@@ -195,25 +200,25 @@ def main_worker(rank, ngpus_per_node, config, args):
     model.to(device)
 
     logging.get_logger(__name__).info(str(model))
-    
+
     # Model EMA
-    model_ema = ModelEma(model, decay=0.99985, device=device, resume='')
+    model_ema = ModelEma(model, decay=0.99985, device=device, resume="")
 
     # Build optimizer and scheduler
     optimizer = build_optimizer(config, model)
     lr_scheduler = build_scheduler(config, optimizer, len(data_loader_train))
 
     # Wrap model with DDP
-    if config.distributed:
-        model = DDP(
-            model, 
-            device_ids=[rank], 
-            broadcast_buffers=False, 
-            find_unused_parameters=True
-        )
-        model_without_ddp = model.module
-    else:
-        model_without_ddp = model
+
+    model = DDP(
+        model, device_ids=[rank], broadcast_buffers=False, find_unused_parameters=True
+    )
+    model_without_ddp = model.module
+
+    if config.MODEL.TEACHER_RESUME:
+        teacher_model = models.model_factory.create_model(config, full_precision=True)
+        teacher_model.to(device)
+        # teacher_max_accuracy=load_teacher_checkpoint(config,teacher_model,logger)
 
     # Log model parameters and FLOPs
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -234,7 +239,11 @@ def main_worker(rank, ngpus_per_node, config, args):
     max_accuracy = 0.0
     if config.MODEL.RESUME:
         max_accuracy = load_checkpoint(
-            config, model_without_ddp, optimizer, lr_scheduler, logging.get_logger(__name__)
+            config,
+            model_without_ddp,
+            optimizer,
+            lr_scheduler,
+            logging.get_logger(__name__),
         )
         model_ema.ema = deepcopy(model_without_ddp)
         if config.EVAL_MODE:
@@ -244,7 +253,6 @@ def main_worker(rank, ngpus_per_node, config, args):
     logging.get_logger(__name__).info("Start training")
     start_time = time.time()
 
-    
     for epoch in range(config.TRAIN.START_EPOCH, config.TRAIN.EPOCHS):
         train_one_epoch(
             config=config,
@@ -258,6 +266,7 @@ def main_worker(rank, ngpus_per_node, config, args):
             model_ema=model_ema,
             device=device,
             args=args,
+            teacher=teacher_model,
         )
 
         # Save checkpoint
@@ -271,7 +280,7 @@ def main_worker(rank, ngpus_per_node, config, args):
                     optimizer,
                     lr_scheduler,
                     logging.get_logger(__name__),
-                    model_ema=model_ema
+                    model_ema=model_ema,
                 )
 
         # Validation
@@ -283,6 +292,7 @@ def main_worker(rank, ngpus_per_node, config, args):
     logging.get_logger(__name__).info(f"Training time {total_time_str}")
     if config.distributed:
         dist.destroy_process_group()
+
 
 def train_one_epoch(
     config,
@@ -296,6 +306,7 @@ def train_one_epoch(
     model_ema,
     device,
     args,
+    teacher=None,
 ):
     """
     Trains the model for one epoch.
@@ -307,6 +318,9 @@ def train_one_epoch(
     loss_meter = AverageMeter()
     super_loss_meter = AverageMeter()
     grad_norm_meter = AverageMeter()
+    teacher_criteration = AdaptiveLossSoft(alpha_min=-1.0, alpha_max=1.0)
+    gamma = 1.0
+    beta = 1.0
 
     start = time.time()
 
@@ -320,9 +334,17 @@ def train_one_epoch(
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
 
-
+        cfg = model.module.sample_max_subnet()
         output, _, _ = model(samples)
         loss = criterion(output, targets)
+        if teacher is not None:
+            with torch.no_grad():
+                teacher_cfg = teacher.sample_max_subnet()
+                teacher_output, _, _ = teacher(samples)
+                teacher_soft_logit = teacher_output.clone().detach()
+
+            super_teacher_loss = teacher_criteration(output, teacher_soft_logit)
+            loss = loss + gamma * super_teacher_loss
         loss = loss / config.TRAIN.ACCUMULATION_STEPS
 
         # Backward pass
@@ -330,7 +352,9 @@ def train_one_epoch(
 
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.TRAIN.CLIP_GRAD
+            )
             grad_norm_meter.update(grad_norm.item())
 
             # Optimizer step
@@ -346,6 +370,54 @@ def train_one_epoch(
 
         batch_time.update(time.time() - start)
         start = time.time()
+
+        super_sandwich_rule = getattr(config, "super_sandwich_rule")
+        num_subnet_training = max(2, getattr(config, "num_arch_training", 2))
+        model.module.set_dropout_rate(0.0, 0.0, True)
+
+        if idx % config.TRAIN.SUBNET_REPEAT_SAMPLE == 0:
+            cfgs = []
+
+        for arch_id in range(1, num_subnet_training):
+            if arch_id == 1 and super_sandwich_rule:
+                model.module.sample_min_subnet()
+                if teacher:
+                    teacher.sample_min_subnet()
+            else:
+                if idx % config.TRAIN.SUBNET_REPEAT_SAMPLE == 0:
+                    cfg = model.module.sample_active_subnet()
+                    cfgs.append(cfg)
+                else:
+                    cfg = cfgs[arch_id - 1]
+                    model.module.set_active_subnet(
+                        cfg["resolution"],
+                        cfg["width"],
+                        cfg["depth"],
+                        cfg["kernel_size"],
+                        cfg["expand_ratio"],
+                    )
+                if teacher:
+                    teacher.set_active_subnet(
+                        cfg["resolution"],
+                        cfg["width"],
+                        cfg["depth"],
+                        cfg["kernel_size"],
+                        cfg["expand_ratio"],
+                    )
+
+            outputs, subnet_features, _ = model(samples)
+            sub_loss = criterion(outputs, targets)
+            if teacher:
+                with torch.no_grad():
+                    _, teacher_feature, _ = teacher(samples)
+                sub_teach_loss = teacher_criteration(outputs, teacher_soft_logit)
+                fkd_sub_loss = 0.0
+                for i in range(len(subnet_features)):
+                    fkd_sub_loss += teacher_criteration(outputs, teacher_soft_logit)
+                fkd_sub_loss /= len(subnet_features)
+                if not math.isnan(fkd_sub_loss) and not math.isnan(sub_teach_loss):
+                    sub_loss += gamma * sub_teach_loss + beta * fkd_sub_loss
+            sub_loss.backward()
 
         # Logging
         if idx % args.print_freq == 0:
@@ -372,6 +444,7 @@ def train_one_epoch(
         f"Epoch [{epoch}] training takes {str(datetime.timedelta(seconds=int(time.time() - start)))}"
     )
 
+
 def validate(config, train_loader, valid_loader, model, device, writer=None):
     """
     Validates the model on the validation dataset.
@@ -397,6 +470,7 @@ def validate(config, train_loader, valid_loader, model, device, writer=None):
         writer=writer,
     )
 
+
 def throughput(data_loader, model, logger):
     """
     Measures the throughput of the model.
@@ -420,8 +494,11 @@ def throughput(data_loader, model, logger):
             end_time = time.time()
 
             throughput = (end_time - start_time) / (30 * batch_size)
-            logger.info(f"Batch size {batch_size} throughput: {throughput:.6f} sec/sample")
+            logger.info(
+                f"Batch size {batch_size} throughput: {throughput:.6f} sec/sample"
+            )
             break  # Only evaluate the first batch
+
 
 def main():
     args, config = parse_option()
@@ -431,12 +508,16 @@ def main():
 
     # Initialize distributed training if enabled
     if config.distributed:
-        ngpus_per_node = int(os.environ.get("SLURM_GPUS_ON_NODE", torch.cuda.device_count()))
+        ngpus_per_node = int(
+            os.environ.get("SLURM_GPUS_ON_NODE", torch.cuda.device_count())
+        )
         config.WORLD_SIZE = ngpus_per_node * int(os.environ.get("SLURM_NODES", 1))
         config.RANK = int(os.environ.get("SLURM_PROCID", 0))
-        os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', '127.0.0.1')
-        os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '29500')
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config, args))
+        os.environ["MASTER_ADDR"] = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
+        mp.spawn(
+            main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, config, args)
+        )
     else:
         config.defrost()
         ngpus_per_node = 1
@@ -444,6 +525,7 @@ def main():
         config.RANK = 0
         config.freeze()
         main_worker(0, ngpus_per_node, config, args)
+
 
 if __name__ == "__main__":
     main()

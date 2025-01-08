@@ -160,7 +160,7 @@ _C.LOCAL_RANK = 0
 _C.distributed = True
 _C.multiprocessing_distributed = True
 _C.arch = "attentive_nas_dynamic_model"
-_C.sandwich_rule = True
+_C.super_sandwich_rule = True
 _C.inplace_distill = True
 _C.post_bn_calibration_batch_num = 64
 _C.num_arch_training = 4
@@ -283,7 +283,7 @@ def update_config(config, args):
     if args.resume:
         config.MODEL.RESUME = args.resume
     if args.fp_teacher_dir:
-        config.MODEL.TEACHER_RESUME
+        config.MODEL.TEACHER_RESUME = args.fp_teacher_dir
     if args.accumulation_steps:
         config.TRAIN.ACCUMULATION_STEPS = args.accumulation_steps
     if args.use_checkpoint:
