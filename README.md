@@ -1,6 +1,8 @@
-# Super-HQViT: High-Quality Vision Transformer for Tiny ImageNet
+# Super_QHViT
 
-Super-HQViT is an optimized Vision Transformer (ViT) model tailored for the Tiny ImageNet dataset. It leverages Neural Architecture Search (NAS), mixed precision training, and distributed training to deliver high performance and scalability.
+Deploying Hybrid Vision Transformers (H-ViTs) across diverse hardware platforms poses significant challenges due to varying constraints and resource requirements inherent to each device. To overcome these obstacles, we introduce Super-QHViT, an elastic quantized H-ViT supernet that generates multiple architectures with different mixed-precision policies. This design enables efficient adaptation to different hardware environments without the need for extensive retraining.
+
+Super-QHViT is trained using a novel method called Super Sandwich training, which employs a two-level knowledge distillation approach. This technique combines logit-based and feature-based distillation to enhance the performance of each subnet within the supernet. Our supernet is highly configurable, featuring customizable CNN and ViT blocks and supporting various quantization bit-widths.
 
 ## Table of Contents
 
