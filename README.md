@@ -10,7 +10,6 @@ Super-HQViT is an optimized Vision Transformer (ViT) model tailored for the Tiny
   - [Using Docker](#using-docker)
 - [Usage](#usage)
   - [Training](#training)
-  - [Evaluation](#evaluation)
   
 ## Features
 
