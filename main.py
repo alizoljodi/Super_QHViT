@@ -56,15 +56,14 @@ def parse_option():
     parser.add_argument(
         "--cfg",
         type=str,
-        default="/home/ali/Pictures/HQViT_NAS_Tiny_imgnt/configs/cfg.yaml",
+        required=True,
         metavar="FILE",
         help="Path to config file",
     )
     parser.add_argument(
         "--working-dir",
         type=str,
-        default="/home/ali/Pictures/test",
-        # required=True,
+        required=True,
         help="Root directory for models and logs",
     )
     parser.add_argument(
@@ -77,7 +76,7 @@ def parse_option():
     parser.add_argument("--resume", type=str, help="Path to resume checkpoint")
     parser.add_argument(
         "--fp_teacher_dir",
-        default="/home/ali/Downloads/ckpt_360(1).pth",
+        default="",
         type=str,
         help="Path to full-precision teacher weights",
     )
@@ -368,8 +367,6 @@ def train_one_epoch(
             if model_ema is not None:
                 model_ema.update(model)
 
-        
-
         super_sandwich_rule = getattr(config, "super_sandwich_rule")
         num_subnet_training = max(2, getattr(config, "num_arch_training", 2))
         model.module.set_dropout_rate(0.0, 0.0, True)
@@ -417,7 +414,7 @@ def train_one_epoch(
                 if not math.isnan(fkd_sub_loss) and not math.isnan(sub_teach_loss):
                     sub_loss += gamma * sub_teach_loss + beta * fkd_sub_loss
             sub_loss.backward()
-        
+
         if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
             # Gradient clipping
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -435,10 +432,9 @@ def train_one_epoch(
             # Update EMA
             if model_ema is not None:
                 model_ema.update(model)
-                
+
         batch_time.update(time.time() - start)
         start = time.time()
-
 
         # Logging
         if idx % args.print_freq == 0:
