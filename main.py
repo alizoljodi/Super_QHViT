@@ -368,8 +368,7 @@ def train_one_epoch(
             if model_ema is not None:
                 model_ema.update(model)
 
-        batch_time.update(time.time() - start)
-        start = time.time()
+        
 
         super_sandwich_rule = getattr(config, "super_sandwich_rule")
         num_subnet_training = max(2, getattr(config, "num_arch_training", 2))
@@ -418,6 +417,28 @@ def train_one_epoch(
                 if not math.isnan(fkd_sub_loss) and not math.isnan(sub_teach_loss):
                     sub_loss += gamma * sub_teach_loss + beta * fkd_sub_loss
             sub_loss.backward()
+        
+        if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
+            # Gradient clipping
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config.TRAIN.CLIP_GRAD
+            )
+            grad_norm_meter.update(grad_norm.item())
+
+            # Optimizer step
+            optimizer.step()
+            optimizer.zero_grad()
+
+            # Update learning rate scheduler
+            lr_scheduler.step_update(epoch * num_steps + idx)
+
+            # Update EMA
+            if model_ema is not None:
+                model_ema.update(model)
+                
+        batch_time.update(time.time() - start)
+        start = time.time()
+
 
         # Logging
         if idx % args.print_freq == 0:
