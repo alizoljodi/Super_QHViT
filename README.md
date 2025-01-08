@@ -8,7 +8,6 @@ Super-HQViT is an optimized Vision Transformer (ViT) model tailored for the Tiny
 - [Requirements](#requirements)
 - [Installation](#installation)
   - [Using Docker](#using-docker)
-- [Configuration](#configuration)
 - [Usage](#usage)
   - [Training](#training)
   - [Evaluation](#evaluation)
@@ -38,3 +37,29 @@ Super-HQViT is an optimized Vision Transformer (ViT) model tailored for the Tiny
    ```bash
    git clone https://github.com/yourusername/Super-HQViT.git
    cd Super-HQViT
+2. **Build the Docker Image:**
+   Ensure that you have a Dockerfile and requirements.txt in the repository.
+   ```bash
+   docker build -t superhqvit:latest .
+3. **Run the Docker Container:**
+   
+   Ensure you have NVIDIA Docker runtime installed. Run the container with GPU support:
+   ```bash
+   docker run --gpus all -it \
+    -v /path/to/your/data:/workspace/data \
+    -v /path/to/your/configs:/workspace/configs \
+    -v /path/to/your/output:/workspace/output \
+    superhqvit:latest \
+    --cfg configs/config.yaml \
+    --working-dir ./output
+## Usage
+### Training
+To start training, run the Docker container with the appropriate arguments:
+```bash
+docker run --gpus all -it \
+-v /path/to/your/data:/workspace/data \
+-v /path/to/your/configs:/workspace/configs \
+-v /path/to/your/output:/workspace/output \
+superhqvit:latest \
+--cfg configs/config.yaml \
+--working-dir ./output
