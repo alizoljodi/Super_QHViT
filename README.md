@@ -36,8 +36,8 @@ Super-QHViT is trained using a novel method called Super Sandwich training, whic
 1. **Clone the Repository:**
 
    ```bash
-   git clone https://github.com/yourusername/Super-HQViT.git
-   cd Super-HQViT
+   git clone https://github.com/yourusername/Super_QHViT.git
+   cd Super_QHViT
 2. **Build the Docker Image:**
    Ensure that you have a Dockerfile and requirements.txt in the repository.
    ```bash
