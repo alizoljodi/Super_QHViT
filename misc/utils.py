@@ -49,6 +49,7 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, logger):
         # print(checkpoint['model'][key])
         # print(model.state_dict()[key])
         # print('äääääääääääääääääääääää')
+        # try:
         if "relative_position_bias_table" in key:
             if checkpoint["model"][key].shape[0] != model.state_dict()[key].shape[0]:
                 pos_bias_table = checkpoint["model"][key]
@@ -67,6 +68,8 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, logger):
                 checkpoint["model"][key] = new_pos_bias_table.reshape(
                     num_head, -1
                 ).permute(1, 0)
+        # except:
+        #    logger.info(f"missed")
 
     msg = model.load_state_dict(checkpoint["model"], strict=False)
 

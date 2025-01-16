@@ -9,7 +9,7 @@ _C = CN()
 
 # Base config files
 _C.BASE = [""]
-
+_C.VAL_FREQ = 5
 # -----------------------------------------------------------------------------
 # Data settings
 # -----------------------------------------------------------------------------
@@ -17,7 +17,7 @@ _C.DATA = CN()
 # Batch size for a single GPU, could be overwritten by command line argument
 _C.DATA.BATCH_SIZE = 4
 # Path to dataset, could be overwritten by command line argument
-_C.DATA.DATA_PATH = "/home/ali/Documents/imagenet"
+_C.DATA.DATA_PATH = "/mimer/NOBACKUP/groups/naiss2023-5-522"
 # Dataset name
 _C.DATA.DATASET = "imagenet"
 # Input image size
@@ -33,7 +33,7 @@ _C.DATA.CACHE_MODE = "part"
 # Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.
 _C.DATA.PIN_MEMORY = True
 # Number of data loading threads
-_C.DATA.NUM_WORKERS = 24
+_C.DATA.NUM_WORKERS = 6
 # Prefetch factor
 _C.DATA.PREFETCH_FACTOR = 4  # 12
 
@@ -48,7 +48,7 @@ _C.MODEL.NAME = "vit"
 # Checkpoint to resume, could be overwritten by command line argument
 _C.MODEL.RESUME = ""
 # Number of classes, overwritten in data preparation
-_C.MODEL.NUM_CLASSES = 1000
+_C.MODEL.NUM_CLASSES = 200
 # Dropout rate
 _C.MODEL.DROP_RATE = 0.0
 # Drop path rate
@@ -65,8 +65,8 @@ _C.TRAIN.START_EPOCH = 0
 _C.TRAIN.EPOCHS = 300
 _C.TRAIN.WARMUP_EPOCHS = 20
 _C.TRAIN.WEIGHT_DECAY = 0.05
-_C.TRAIN.BASE_LR = 0.001
-_C.TRAIN.WARMUP_LR = 0.001
+_C.TRAIN.BASE_LR = 5e-4
+_C.TRAIN.WARMUP_LR = 5e-7
 _C.TRAIN.MIN_LR = 5e-10
 # Clip gradient norm
 _C.TRAIN.CLIP_GRAD = 5.0
@@ -167,17 +167,17 @@ _C.num_arch_training = 4
 
 _C.supernet_config = CN()
 _C.supernet_config.use_v3_head = True
-_C.supernet_config.resolutions = [224]
+_C.supernet_config.resolutions = [192, 224, 256, 288]
 _C.supernet_config.first_conv = CN()
 _C.supernet_config.first_conv.bit_width = [8]
-_C.supernet_config.first_conv.c = [16]
+_C.supernet_config.first_conv.c = [16, 24]
 _C.supernet_config.first_conv.act_func = "swish"
 _C.supernet_config.first_conv.s = 2
 
 _C.supernet_config.mb1 = CN()
 _C.supernet_config.mb1.bit_width = [8]
-_C.supernet_config.mb1.c = [16]
-_C.supernet_config.mb1.d = [1]
+_C.supernet_config.mb1.c = [16, 24]
+_C.supernet_config.mb1.d = [1, 2]
 _C.supernet_config.mb1.k = [3, 5]
 _C.supernet_config.mb1.t = [1]
 _C.supernet_config.mb1.s = 1
@@ -186,8 +186,8 @@ _C.supernet_config.mb1.se = False
 
 _C.supernet_config.mb2 = CN()
 _C.supernet_config.mb2.bit_width = [8]
-_C.supernet_config.mb2.c = [24]
-_C.supernet_config.mb2.d = [3]
+_C.supernet_config.mb2.c = [24, 32]
+_C.supernet_config.mb2.d = [3, 4, 5]
 _C.supernet_config.mb2.k = [3, 5]
 _C.supernet_config.mb2.t = [4, 5, 6]
 _C.supernet_config.mb2.s = 2
@@ -196,8 +196,8 @@ _C.supernet_config.mb2.se = False
 
 _C.supernet_config.mb3 = CN()
 _C.supernet_config.mb3.bit_width = [8]
-_C.supernet_config.mb3.c = [32]
-_C.supernet_config.mb3.d = [3]
+_C.supernet_config.mb3.c = [32, 40]
+_C.supernet_config.mb3.d = [3, 4, 5, 6]
 _C.supernet_config.mb3.k = [3]
 _C.supernet_config.mb3.t = [4, 5, 6]
 _C.supernet_config.mb3.s = 2
@@ -206,8 +206,8 @@ _C.supernet_config.mb3.se = True
 
 _C.supernet_config.mb4 = CN()
 _C.supernet_config.mb4.bit_width = [8]
-_C.supernet_config.mb4.c = [64]
-_C.supernet_config.mb4.d = [3]
+_C.supernet_config.mb4.c = [64, 72]
+_C.supernet_config.mb4.d = [3, 4, 5, 6]
 _C.supernet_config.mb4.k = [3]
 _C.supernet_config.mb4.t = [4, 5, 6]
 _C.supernet_config.mb4.s = 2
@@ -216,8 +216,8 @@ _C.supernet_config.mb4.se = False
 
 _C.supernet_config.mb5 = CN()
 _C.supernet_config.mb5.bit_width = [8]
-_C.supernet_config.mb5.c = [112]
-_C.supernet_config.mb5.d = [3]
+_C.supernet_config.mb5.c = [112, 120, 128]
+_C.supernet_config.mb5.d = [3, 4, 5, 6, 7, 8, 9]
 _C.supernet_config.mb5.k = [3]
 _C.supernet_config.mb5.t = [4, 5, 6]
 _C.supernet_config.mb5.s = 2
@@ -227,8 +227,8 @@ _C.supernet_config.mb5.se = True
 
 _C.supernet_config.mb6 = CN()
 _C.supernet_config.mb6.bit_width = [8]
-_C.supernet_config.mb6.c = [160]  # [168, 176, 184, 192]
-_C.supernet_config.mb6.d = [3]
+_C.supernet_config.mb6.c = [160, 168, 176, 184]  # [168, 176, 184, 192]
+_C.supernet_config.mb6.d = [3, 4, 5, 6, 7, 8]
 _C.supernet_config.mb6.k = [3]
 _C.supernet_config.mb6.t = [6]
 _C.supernet_config.mb6.s = 1
@@ -237,8 +237,8 @@ _C.supernet_config.mb6.se = True
 
 _C.supernet_config.mb7 = CN()
 _C.supernet_config.mb7.bit_width = [8]
-_C.supernet_config.mb7.c = [208]
-_C.supernet_config.mb7.d = [3]
+_C.supernet_config.mb7.c = [208, 216, 224]
+_C.supernet_config.mb7.d = [3, 4, 5, 6]
 _C.supernet_config.mb7.k = [3]
 _C.supernet_config.mb7.t = [6]
 _C.supernet_config.mb7.s = 2
@@ -247,7 +247,7 @@ _C.supernet_config.mb7.se = True
 
 _C.supernet_config.last_conv = CN()
 _C.supernet_config.last_conv.bit_width = [8]
-_C.supernet_config.last_conv.c = [1792]
+_C.supernet_config.last_conv.c = [1792, 1984]
 _C.supernet_config.last_conv.act_func = "swish"
 
 _C.sync_bn = False  # True

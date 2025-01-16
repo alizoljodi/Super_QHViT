@@ -149,7 +149,7 @@ def validate(
                 logger.info(summary)
                 results += [summary]
             else:
-                group = reduce_eval_results(summary, args.gpu)
+                group = reduce_eval_results(summary, device)
                 results += group
                 for rec in group:
                     logger.info(rec)

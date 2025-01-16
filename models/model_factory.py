@@ -13,8 +13,8 @@ def create_model(args, parent="", arch=None, full_precision=False):
     bn_momentum = getattr(args, "bn_momentum", 0.1)
     bn_eps = getattr(args, "bn_eps", 1e-5)
 
-    dropout = getattr(args, "dropout", 0)
-    drop_connect = getattr(args, "drop_connect", 0)
+    dropout = getattr(args, "dropout", 0.5)
+    drop_connect = getattr(args, "drop_connect", 0.1)
 
     if full_precision:
         if arch is None:
